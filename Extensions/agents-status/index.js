@@ -227,6 +227,73 @@ function focusActionID(s) {
   return "focus/" + encodeURIComponent(s.agent || "") + "/" + encodeURIComponent(s.session_id || "");
 }
 
+var SETTING_PINNED = "pinnedSession";
+var pinnedKey = null; // "agent|session_id" — loads lazily, persists via settings
+
+function loadPinnedKey() {
+  if (pinnedKey !== null) return pinnedKey;
+  try {
+    var v = SuperIsland.settings.get(SETTING_PINNED);
+    pinnedKey = (typeof v === "string" && v) ? v : "";
+  } catch (e) { pinnedKey = ""; }
+  return pinnedKey;
+}
+
+function savePinnedKey(v) {
+  pinnedKey = v || "";
+  try { SuperIsland.settings.set(SETTING_PINNED, pinnedKey); } catch (e) {}
+}
+
+function pinActionID(s) {
+  return "pin/" + encodeURIComponent(s.agent || "") + "/" + encodeURIComponent(s.session_id || "");
+}
+
+// Big-card session: explicit pin wins, otherwise the top-priority session.
+function bigCardSession() {
+  var want = loadPinnedKey();
+  if (want) {
+    for (var i = 0; i < sessions.length; i++) {
+      if (sessionKey(sessions[i]) === want) return sessions[i];
+    }
+  }
+  return sessions.length > 0 ? sessions[0] : null;
+}
+
+function cardBG(view) {
+  return View.cornerRadius(
+    View.background(view, { r: 1, g: 1, b: 1, a: 0.06 }),
+    12
+  );
+}
+
+function bigCard(s) {
+  var st = effectiveState(s);
+  var accent = stateAccent(st, true);
+  var title = View.vstack([
+    View.text(s.agent || "Agent", { style: "headline", color: "white", lineLimit: 1 }),
+    View.text(st === "Done" ? "done" : st.toLowerCase(), { style: "caption", color: accent, lineLimit: 1 }),
+    View.text(displayTitleFor(s), { style: "footnote", color: WHITE_65, lineLimit: 2 }),
+    View.text(((s.terminal ? s.terminal + " · " : "") + relativeTime(s.updated_at)), { style: "footnote", color: WHITE_40, lineLimit: 1 })
+  ], { spacing: 2, align: "leading" });
+  var inner = View.hstack([
+    pixelBox(st, true, 64, s.agent),
+    View.frame(title, { maxWidth: 9999, alignment: "leading" })
+  ], { spacing: 10, align: "center" });
+  var padded = View.padding(View.padding(inner, { edges: "horizontal", amount: 10 }), { edges: "vertical", amount: 10 });
+  if (!isSessionFocusable(s)) return cardBG(padded);
+  return View.button(cardBG(padded), focusActionID(s));
+}
+
+function miniCard(s, isPinned) {
+  var label = s.agent || "Agent";
+  var inner = View.vstack([
+    pixelBox(effectiveState(s), true, 30, s.agent),
+    View.text((isPinned ? "● " : "") + label, { style: "caption", color: isPinned ? "white" : WHITE_65, lineLimit: 1 })
+  ], { spacing: 3, align: "center" });
+  var padded = View.padding(View.padding(inner, { edges: "horizontal", amount: 8 }), { edges: "vertical", amount: 6 });
+  return View.button(cardBG(padded), pinActionID(s));
+}
+
 function askActionID(permissionId, optionIndex) {
   return "ask/" + encodeURIComponent(permissionId || "") + "/" + String(optionIndex);
 }
@@ -744,6 +811,16 @@ SuperIsland.registerModule({
         return;
       }
       focusSession(decodeURIComponentSafe(parts[1] || ""), decodeURIComponentSafe(parts[2] || ""));
+      return;
+    }
+    if (actionID && actionID.indexOf("pin/") === 0) {
+      // Toggle: tapping a mini card pins it to the big slot; tapping the
+      // pinned one again releases back to automatic (top session).
+      var key = decodeURIComponentSafe(actionID.slice(4).split("/")[0] || "") + "|" +
+                decodeURIComponentSafe(actionID.slice(4).split("/")[1] || "");
+      savePinnedKey(loadPinnedKey() === key ? "" : key);
+      dlog("pin -> " + (pinnedKey || "auto"));
+      return;
     }
   },
 
@@ -799,6 +876,7 @@ SuperIsland.registerModule({
   },
 
   // -- expanded (drawer, ~360×80) --
+  // One big pinnable card on the left, small cards grid on the right.
   expanded: function () {
     if (!bridgeOnline || sessions.length === 0) {
       return heroView();
@@ -809,17 +887,27 @@ SuperIsland.registerModule({
       var card = questionCard(sessions[q], 22);
       if (card) return card;
     }
-    var rows = [];
-    var n = Math.min(sessions.length, 2);
-    for (var i = 0; i < n; i++) {
-      rows.push(sessionRow(sessions[i], 22, false, isSessionFocusable(sessions[i])));
+    var big = bigCardSession();
+    var rest = [];
+    for (var i = 0; i < sessions.length && rest.length < 4; i++) {
+      if (sessionKey(sessions[i]) !== sessionKey(big)) rest.push(sessions[i]);
     }
-    if (sessions.length > 2) {
-      rows.push(View.text("+" + (sessions.length - 2) + " more", {
+    var gridRows = [];
+    for (var r = 0; r < rest.length; r += 2) {
+      var cells = [miniCard(rest[r], sessionKey(rest[r]) === loadPinnedKey())];
+      if (r + 1 < rest.length) cells.push(miniCard(rest[r + 1], sessionKey(rest[r + 1]) === loadPinnedKey()));
+      gridRows.push(View.hstack(cells, { spacing: 6, align: "center" }));
+    }
+    var right = gridRows.length > 0
+      ? View.vstack(gridRows, { spacing: 6, align: "center" })
+      : View.text("tap a card to pin it here", { style: "footnote", color: WHITE_40 });
+    var body = [View.hstack([bigCard(big), right], { spacing: 8, align: "center" })];
+    if (sessions.length > 5) {
+      body.push(View.text("+" + (sessions.length - 5) + " more", {
         style: "footnote", color: WHITE_40
       }));
     }
-    return View.vstack(rows, { spacing: 6, align: "leading" });
+    return View.vstack(body, { spacing: 6, align: "leading" });
   },
 
   // -- fullExpanded (detail, 400×200) --
