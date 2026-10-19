@@ -294,6 +294,31 @@ function miniCard(s, isPinned) {
   return View.button(cardBG(padded), pinActionID(s));
 }
 
+// Shared big-card + mini-grid builder. maxRest caps the grid (Infinity ok);
+// when capped, a "+N more" footnote is appended by the caller via return.
+function cardsView(maxRest) {
+  var big = bigCardSession();
+  var rest = [];
+  for (var i = 0; i < sessions.length && rest.length < maxRest; i++) {
+    if (sessionPendingPermission(sessions[i])) continue; // surfaced as question card
+    if (sessionKey(sessions[i]) !== sessionKey(big)) rest.push(sessions[i]);
+  }
+  var gridRows = [];
+  for (var r = 0; r < rest.length; r += 2) {
+    var cells = [miniCard(rest[r], sessionKey(rest[r]) === loadPinnedKey())];
+    if (r + 1 < rest.length) cells.push(miniCard(rest[r + 1], sessionKey(rest[r + 1]) === loadPinnedKey()));
+    gridRows.push(View.hstack(cells, { spacing: 6, align: "center" }));
+  }
+  var right = gridRows.length > 0
+    ? View.vstack(gridRows, { spacing: 6, align: "center" })
+    : View.text("tap a card to pin it here", { style: "footnote", color: WHITE_40 });
+  return {
+    big: big,
+    view: View.hstack([bigCard(big), right], { spacing: 8, align: "center" }),
+    shown: rest.length
+  };
+}
+
 function askActionID(permissionId, optionIndex) {
   return "ask/" + encodeURIComponent(permissionId || "") + "/" + String(optionIndex);
 }
@@ -887,21 +912,8 @@ SuperIsland.registerModule({
       var card = questionCard(sessions[q], 22);
       if (card) return card;
     }
-    var big = bigCardSession();
-    var rest = [];
-    for (var i = 0; i < sessions.length && rest.length < 4; i++) {
-      if (sessionKey(sessions[i]) !== sessionKey(big)) rest.push(sessions[i]);
-    }
-    var gridRows = [];
-    for (var r = 0; r < rest.length; r += 2) {
-      var cells = [miniCard(rest[r], sessionKey(rest[r]) === loadPinnedKey())];
-      if (r + 1 < rest.length) cells.push(miniCard(rest[r + 1], sessionKey(rest[r + 1]) === loadPinnedKey()));
-      gridRows.push(View.hstack(cells, { spacing: 6, align: "center" }));
-    }
-    var right = gridRows.length > 0
-      ? View.vstack(gridRows, { spacing: 6, align: "center" })
-      : View.text("tap a card to pin it here", { style: "footnote", color: WHITE_40 });
-    var body = [View.hstack([bigCard(big), right], { spacing: 8, align: "center" })];
+    var cards = cardsView(4);
+    var body = [cards.view];
     if (sessions.length > 5) {
       body.push(View.text("+" + (sessions.length - 5) + " more", {
         style: "footnote", color: WHITE_40
@@ -911,6 +923,7 @@ SuperIsland.registerModule({
   },
 
   // -- fullExpanded (detail, 400×200) --
+  // Same big-card + mini-grid as the drawer, uncapped and scrollable.
   fullExpanded: function () {
     if (!bridgeOnline || sessions.length === 0) {
       return heroView();
@@ -924,11 +937,7 @@ SuperIsland.registerModule({
         rows.push(View.divider());
       }
     }
-    for (var i = 0; i < sessions.length; i++) {
-      if (sessionPendingPermission(sessions[i])) continue; // already surfaced above
-      rows.push(sessionRow(sessions[i], 24, true, isSessionFocusable(sessions[i])));
-      if (i < sessions.length - 1) rows.push(View.divider());
-    }
+    rows.push(cardsView(9999).view);
     return View.scroll(
       View.vstack(rows, { spacing: 6, align: "leading" }),
       { axes: "vertical", showsIndicators: false }
