@@ -92,7 +92,9 @@ Extensions are JavaScript packages that run inside a sandboxed JavaScriptCore co
 
 ## Credits
 
-Originally based on [SuperIsland by shobhit99](https://github.com/shobhit99/SuperIsland). Rebranded and maintained independently as **NotchMe**.
+**NotchMe** is independently developed and maintained by [aldyuhaa](https://github.com/aldyuhaa).
+
+It started from [SuperIsland by shobhit99](https://github.com/shobhit99/SuperIsland) — big thanks to him for the original Dynamic Island for macOS concept and codebase. NotchMe has since been rebranded, diverged, and is developed independently (no longer tracking upstream).
 
 ---
 

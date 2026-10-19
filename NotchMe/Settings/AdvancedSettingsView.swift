@@ -111,6 +111,15 @@ struct AdvancedSettingsView: View {
                     updateButton
                 }
                 .padding(.horizontal, 16).padding(.vertical, 11)
+
+                SettingRowDivider()
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Credits").font(.system(size: 13))
+                    Text("NotchMe is independently maintained by aldyuhaa, originally based on SuperIsland by shobhit99.")
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 11)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
