@@ -111,6 +111,17 @@ function stateAccent(s, online) {
   return COLORS[s] || COLORS.Idle;
 }
 
+// T3 keeps failed runs in its state DB forever, so the bridge reports them as
+// Error on every poll. Those cards would sit in the island indefinitely, so the
+// card views only render sessions that are not in an error state.
+function displaySessions() {
+  var out = [];
+  for (var i = 0; i < sessions.length; i++) {
+    if (effectiveState(sessions[i]) !== "Error") out.push(sessions[i]);
+  }
+  return out;
+}
+
 function stateDescription(s, online) {
   if (!online) {
     return activationFailed
@@ -250,13 +261,14 @@ function pinActionID(s) {
 
 // Big-card session: explicit pin wins, otherwise the top-priority session.
 function bigCardSession() {
+  var list = displaySessions();
   var want = loadPinnedKey();
   if (want) {
-    for (var i = 0; i < sessions.length; i++) {
-      if (sessionKey(sessions[i]) === want) return sessions[i];
+    for (var i = 0; i < list.length; i++) {
+      if (sessionKey(list[i]) === want) return list[i];
     }
   }
-  return sessions.length > 0 ? sessions[0] : null;
+  return list.length > 0 ? list[0] : null;
 }
 
 // Fixed cell metrics keep both grids on the same rhythm: every mini card is
@@ -321,11 +333,12 @@ function moreCard(count, p) {
 // Shared big-card + mini-grid builder, laid out as a fixed-width grid so
 // columns align across rows and both layouts look the same, just roomier.
 function cardsView(p) {
+  var list = displaySessions();
   var big = bigCardSession();
   var rest = [];
-  for (var i = 0; i < sessions.length; i++) {
-    if (sessionPendingPermission(sessions[i])) continue; // surfaced as question card
-    if (sessionKey(sessions[i]) !== sessionKey(big)) rest.push(sessions[i]);
+  for (var i = 0; i < list.length; i++) {
+    if (sessionPendingPermission(list[i])) continue; // surfaced as question card
+    if (sessionKey(list[i]) !== sessionKey(big)) rest.push(list[i]);
   }
   var shown = rest.slice(0, p.maxMini);
   var hidden = rest.length - shown.length;
@@ -541,7 +554,8 @@ function settingBool(key, fallback) {
 // --- Derived top-session -------------------------------------------------
 var currentAgent = null; // agent of the session behind currentState
 function recomputeTop() {
-  if (!sessions || sessions.length === 0) {
+  var list = displaySessions();
+  if (list.length === 0) {
     currentState = "Idle";
     currentAgent = null;
     return;
@@ -549,15 +563,15 @@ function recomputeTop() {
   // If any session is currently in the green "Done" window, surface that in the
   // compact view so a glance confirms a recently-finished task. Otherwise fall
   // back to the server's priority-sorted top session.
-  for (var i = 0; i < sessions.length; i++) {
-    if (effectiveState(sessions[i]) === "Done") {
+  for (var i = 0; i < list.length; i++) {
+    if (effectiveState(list[i]) === "Done") {
       currentState = "Done";
-      currentAgent = sessions[i].agent || null;
+      currentAgent = list[i].agent || null;
       return;
     }
   }
-  currentState = sessions[0].state || "Idle";
-  currentAgent = sessions[0].agent || null;
+  currentState = list[0].state || "Idle";
+  currentAgent = list[0].agent || null;
 }
 
 // --- Sound alerts --------------------------------------------------------
@@ -964,6 +978,7 @@ SuperIsland.registerModule({
       ], { spacing: 6, align: "center" });
     }
     var counts = countsByEffectiveState();
+    var list = displaySessions();
     var label, labelColor;
     if (counts.Working > 0) {
       label = counts.Working + " working";
@@ -971,8 +986,8 @@ SuperIsland.registerModule({
     } else if (counts.Done > 0) {
       label = counts.Done + " done";
       labelColor = COLORS.Done;
-    } else if (sessions.length > 0) {
-      label = sessions.length === 1 ? "Idle" : (sessions.length + " idle");
+    } else if (list.length > 0) {
+      label = list.length === 1 ? "Idle" : (list.length + " idle");
       labelColor = stateAccent(currentState, true);
     } else {
       label = "No sessions";
@@ -987,13 +1002,14 @@ SuperIsland.registerModule({
   // -- expanded (drawer, 408×88) --
   // One big pinnable card on the left, small cards grid on the right.
   expanded: function () {
-    if (!bridgeOnline || sessions.length === 0) {
+    var list = displaySessions();
+    if (!bridgeOnline || list.length === 0) {
       return heroView();
     }
     // If any session has a pending AskUserQuestion, surface that first —
     // the user needs to act on it before anything else matters.
-    for (var q = 0; q < sessions.length; q++) {
-      var card = questionCard(sessions[q], 22);
+    for (var q = 0; q < list.length; q++) {
+      var card = questionCard(list[q], 22);
       if (card) return card;
     }
     var cards = cardsView(CARD_DRAWER);
@@ -1003,19 +1019,20 @@ SuperIsland.registerModule({
   // -- fullExpanded (detail, 658×180) --
   // Same big-card + mini-grid as the drawer, uncapped and scrollable.
   fullExpanded: function () {
-    if (!bridgeOnline || sessions.length === 0) {
+    var list = displaySessions();
+    if (!bridgeOnline || list.length === 0) {
       return heroView();
     }
     var rows = [];
     var visible = [];
     // Lift any pending AskUserQuestion cards to the top of the detail list.
-    for (var q = 0; q < sessions.length; q++) {
-      var card = questionCard(sessions[q], 24);
+    for (var q = 0; q < list.length; q++) {
+      var card = questionCard(list[q], 24);
       if (card) {
         rows.push(card);
         rows.push(View.divider());
       } else {
-        visible.push(sessions[q]);
+        visible.push(list[q]);
       }
     }
     if (rows.length === 0 && visible.length <= 6) {
