@@ -1,5 +1,5 @@
 import XCTest
-@testable import SuperIsland
+@testable import NotchMe
 
 final class ClaudeUsageFetcherTests: XCTestCase {
 

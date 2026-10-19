@@ -1,5 +1,5 @@
 import XCTest
-@testable import SuperIsland
+@testable import NotchMe
 
 @MainActor
 final class ModuleRefreshSchedulerTests: XCTestCase {

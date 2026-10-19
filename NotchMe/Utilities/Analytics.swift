@@ -1,24 +1,14 @@
 import Foundation
-import Aptabase
 
-/// Privacy-friendly usage analytics via Aptabase.
-/// Counts unique users (anonymous) and lets us see which features are used.
+/// Usage analytics (currently disabled).
+/// Previously reported to Aptabase under the upstream author's key.
+/// To re-enable: add the Aptabase Swift package back in project.yml,
+/// `import Aptabase` here, and initialize with YOUR OWN app key from aptabase.com.
 enum Analytics {
-    /// Aptabase App Key. Tied to the NotchMe project on aptabase.com.
-    private static let appKey = "A-US-9480990542"
-
-    /// Call once at app launch — safe to call multiple times (Aptabase guards).
-    static func start() {
-        Aptabase.shared.initialize(appKey: appKey)
-    }
+    /// Call once at app launch — safe to call multiple times.
+    static func start() {}
 
     /// Fire a named event with optional key/value properties.
-    /// Safe to call from anywhere; no-op until `start()` has run.
-    static func track(_ event: String, properties: [String: Any]? = nil) {
-        if let properties {
-            Aptabase.shared.trackEvent(event, with: properties)
-        } else {
-            Aptabase.shared.trackEvent(event)
-        }
-    }
+    /// Safe to call from anywhere; currently a no-op.
+    static func track(_ event: String, properties: [String: Any]? = nil) {}
 }
