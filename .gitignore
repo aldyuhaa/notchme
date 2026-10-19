@@ -13,3 +13,5 @@ DerivedData/
 *~
 Extensions/whatsapp-web/provider/node_modules/
 tmp/*
+.claude/
+.context/
