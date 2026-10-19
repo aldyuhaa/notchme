@@ -302,7 +302,8 @@ function bigCard(s, p, bigW, bigH, titleLines) {
     View.text(((s.terminal ? s.terminal + " · " : "") + relativeTime(s.updated_at)), { style: "footnote", color: WHITE_40, lineLimit: 1 })
   ], { spacing: 2, align: "leading" });
   var inner = View.hstack([
-    pixelBox(st, true, Math.max(p.bigArt, Math.min(bigW - 100, bigH - 40, 88)), s.agent),
+    // Art is a 48pt PNG; never scale past native or it turns blurry.
+    pixelBox(st, true, Math.max(p.bigArt, Math.min(bigW - 100, bigH - 40, 48)), s.agent),
     View.frame(title, { maxWidth: 9999, alignment: "leading" })
   ], { spacing: 10, align: "center" });
   var padded = View.padding(View.padding(inner, { edges: "horizontal", amount: 10 }), { edges: "vertical", amount: 8 });
