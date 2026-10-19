@@ -943,7 +943,7 @@ SuperIsland.registerModule({
     ], { spacing: 6, align: "center" });
   },
 
-  // -- expanded (drawer, ~360×80) --
+  // -- expanded (drawer, 408×88) --
   // One big pinnable card on the left, small cards grid on the right.
   expanded: function () {
     if (!bridgeOnline || sessions.length === 0) {
@@ -959,7 +959,7 @@ SuperIsland.registerModule({
     return cards.view;
   },
 
-  // -- fullExpanded (detail, 400×200) --
+  // -- fullExpanded (detail, 658×180) --
   // Same big-card + mini-grid as the drawer, uncapped and scrollable.
   fullExpanded: function () {
     if (!bridgeOnline || sessions.length === 0) {
