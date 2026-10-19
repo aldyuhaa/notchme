@@ -267,8 +267,8 @@ var CARD_DRAWER = {
   miniW: 78, miniH: 37, miniArt: 20, cols: 2, gap: 6, maxMini: 4
 };
 var CARD_DETAIL = {
-  bigW: 240, bigMinH: 90, bigArt: 50, bigGap: 10, titleLines: 2,
-  miniW: 92, miniH: 90, miniArt: 40, cols: 4, gap: 8, maxMini: 9999
+  bigW: 240, bigMinH: 74, bigArt: 46, bigGap: 10, titleLines: 1,
+  miniW: 92, miniH: 74, miniArt: 32, cols: 4, gap: 8, maxMini: 9999
 };
 
 function cardBG(view, w, h, align) {
@@ -279,21 +279,22 @@ function cardBG(view, w, h, align) {
   );
 }
 
-function bigCard(s, p, bigH) {
+function bigCard(s, p, bigW, bigH, titleLines) {
   var st = effectiveState(s);
   var accent = stateAccent(st, true);
+  var lines = titleLines || p.titleLines;
   var title = View.vstack([
     View.text(s.agent || "Agent", { style: "headline", color: "white", lineLimit: 1 }),
     View.text(st === "Done" ? "done" : st.toLowerCase(), { style: "caption", color: accent, lineLimit: 1 }),
-    View.text(displayTitleFor(s), { style: "footnote", color: WHITE_65, lineLimit: p.titleLines }),
+    View.text(displayTitleFor(s), { style: "footnote", color: WHITE_65, lineLimit: lines }),
     View.text(((s.terminal ? s.terminal + " · " : "") + relativeTime(s.updated_at)), { style: "footnote", color: WHITE_40, lineLimit: 1 })
   ], { spacing: 2, align: "leading" });
   var inner = View.hstack([
-    pixelBox(st, true, p.bigArt, s.agent),
+    pixelBox(st, true, Math.max(p.bigArt, Math.min(bigW - 100, bigH - 40, 88)), s.agent),
     View.frame(title, { maxWidth: 9999, alignment: "leading" })
   ], { spacing: 10, align: "center" });
   var padded = View.padding(View.padding(inner, { edges: "horizontal", amount: 10 }), { edges: "vertical", amount: 8 });
-  var card = cardBG(padded, p.bigW, bigH, "leading");
+  var card = cardBG(padded, bigW, bigH, "leading");
   if (!isSessionFocusable(s)) return card;
   return View.button(card, focusActionID(s));
 }
@@ -357,9 +358,49 @@ function cardsView(p) {
 
   return {
     big: big,
-    view: View.hstack([bigCard(big, p, bigH), right], { spacing: p.bigGap, align: "top" }),
+    view: View.hstack([bigCard(big, p, p.bigW, bigH), right], { spacing: p.bigGap, align: "top" }),
     shown: shown.length
   };
+}
+
+// The detail panel has a fixed size, so a handful of sessions would leave most
+// of it blank. With up to four, stretch them into equal-width hero cards that
+// fill the whole row instead of hugging the top-left corner.
+function heroRow(list, totalW, gap, h) {
+  var n = list.length;
+  if (n === 1) {
+    return View.hstack([
+      View.spacer(),
+      bigCard(list[0], CARD_DETAIL, 360, h, 2),
+      View.spacer()
+    ], { spacing: 0, align: "top" });
+  }
+  var w = Math.floor((totalW - gap * (n - 1)) / n);
+  var cells = [];
+  for (var i = 0; i < n; i++) cells.push(bigCard(list[i], CARD_DETAIL, w, h, 1));
+  return View.hstack(cells, { spacing: gap, align: "top" });
+}
+
+// Narrower panels (5-6 sessions) stack the card content instead of squeezing
+// an avatar and three text lines side by side.
+function heroTile(s, w, h) {
+  var st = effectiveState(s);
+  var inner = View.vstack([
+    pixelBox(st, true, 44, s.agent),
+    View.text(s.agent || "Agent", { style: "caption", color: "white", lineLimit: 1 }),
+    View.text(st === "Done" ? "done" : st.toLowerCase(), { style: "caption", color: stateAccent(st, true), lineLimit: 1 }),
+    View.text(relativeTime(s.updated_at), { style: "footnote", color: WHITE_40, lineLimit: 1 })
+  ], { spacing: 3, align: "center" });
+  var card = cardBG(View.padding(inner, { edges: "all", amount: 6 }), w, h, "center");
+  return isSessionFocusable(s) ? View.button(card, focusActionID(s)) : card;
+}
+
+function heroTileRow(list, totalW, gap, h) {
+  var n = list.length;
+  var w = Math.floor((totalW - gap * (n - 1)) / n);
+  var cells = [];
+  for (var i = 0; i < n; i++) cells.push(heroTile(list[i], w, h));
+  return View.hstack(cells, { spacing: gap, align: "top" });
 }
 
 function askActionID(permissionId, optionIndex) {
@@ -966,15 +1007,24 @@ SuperIsland.registerModule({
       return heroView();
     }
     var rows = [];
+    var visible = [];
     // Lift any pending AskUserQuestion cards to the top of the detail list.
     for (var q = 0; q < sessions.length; q++) {
       var card = questionCard(sessions[q], 24);
       if (card) {
         rows.push(card);
         rows.push(View.divider());
+      } else {
+        visible.push(sessions[q]);
       }
     }
-    rows.push(cardsView(CARD_DETAIL).view);
+    if (rows.length === 0 && visible.length <= 6) {
+      rows.push(visible.length <= 3
+        ? heroRow(visible, 648, 10, 148)
+        : heroTileRow(visible, 648, 10, 148));
+    } else {
+      rows.push(cardsView(CARD_DETAIL).view);
+    }
     return View.scroll(
       View.vstack(rows, { spacing: 6, align: "leading" }),
       { axes: "vertical", showsIndicators: false }
