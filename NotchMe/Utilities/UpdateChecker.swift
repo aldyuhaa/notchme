@@ -4,8 +4,7 @@ import Foundation
 final class UpdateChecker: ObservableObject {
     static let shared = UpdateChecker()
 
-    // TODO: Set to your own repo when you publish NotchMe (e.g. github.com/YOUR_USERNAME/notchme)
-    private static let apiURL = URL(string: "https://api.github.com/repos/shobhit99/superisland/releases/latest")!
+    private static let apiURL = URL(string: "https://api.github.com/repos/aldyuhaa/notchme/releases/latest")!
     private static let lastCheckedKey = "updateChecker.lastCheckedAt"
     private static let dailyInterval: TimeInterval = 86400
 
