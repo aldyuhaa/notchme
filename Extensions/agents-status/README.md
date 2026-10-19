@@ -10,6 +10,12 @@ Currently bridges:
 - **Codex CLI** — official hooks via `~/.codex/config.toml` + `~/.codex/hooks.json`
   (turn-aware Working / Idle plus transient Error when an active turn exits
   unexpectedly)
+- **CodeBuddy Code** — Claude-compatible hooks in `~/.codebuddy/settings.json`
+  (Working / Waiting / Idle / Error)
+- **Muse** (`muse`) — process-based: Working while an interactive session
+  is alive (no hook mechanism available)
+- **OpenCode** (`opencode`) — process-based, TUI and `serve` included
+- **Mausbot and friends** — generic: any producer can POST events (see below)
 
 ## How it works
 
@@ -60,9 +66,30 @@ In the extension settings, toggle:
 - **Claude Code** — merges hooks into `~/.claude/settings.json`
 - **Codex CLI** — enables `features.codex_hooks = true` in
   `~/.codex/config.toml` and installs command hooks in `~/.codex/hooks.json`
+- **CodeBuddy Code** — merges Claude-compatible hooks into
+  `~/.codebuddy/settings.json`
 
-Both are idempotent and keep backups (`.agents-status.bak`). Un-toggling removes
-only the entries this extension added.
+All three are idempotent and keep backups (`.agents-status.bak`). Un-toggling
+removes only the entries this extension added. Muse and OpenCode need no
+setup — any interactive session is picked up automatically by process scan.
+
+### Custom integrations (Mausbot)
+
+Any producer can report into the island — no hooks required:
+
+```bash
+# session starts working
+curl -s -X POST http://127.0.0.1:7823/event -H 'Content-Type: application/json' \
+  -d '{"state":"Working","agent":"Mausbot","session_id":"bot-1","title":"nightly sync","cwd":"/tmp"}'
+# session done / gone
+curl -s -X POST http://127.0.0.1:7823/event -H 'Content-Type: application/json' \
+  -d '{"state":"Ended","agent":"Mausbot","session_id":"bot-1"}'
+```
+
+Contract: `state` is one of `Working | Waiting | Idle | Error` (or `Ended`
+to remove), `agent` is any display name, `session_id` identifies the session.
+Optional: `title`, `cwd`, `terminal`, `pid` (enables terminal focus-jump and
+auto-removal when the process exits).
 
 ### 4. Test
 

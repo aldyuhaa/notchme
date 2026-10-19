@@ -109,5 +109,73 @@ class AgentsStatusServerTests(unittest.TestCase):
         self.assertIsNone(server._sessions[key]["turn_started_at"])
 
 
+    def test_muse_interactive_process_detected(self):
+        self.assertTrue(server._muse_is_interactive_process("muse", "muse"))
+        self.assertTrue(server._muse_is_interactive_process("muse-bin-1.4.10", "muse-bin-1.4.10"))
+        self.assertTrue(server._muse_is_interactive_process("bash", "/bin/bash /tmp/fakebin/muse"))
+        self.assertFalse(server._muse_is_interactive_process("muse-bin-1.4.10", "muse-bin-1.4.10 serve"))
+        self.assertFalse(server._muse_is_interactive_process("muse", "muse exec 'ls'"))
+        self.assertFalse(server._muse_is_interactive_process("muse", "muse --help"))
+        self.assertFalse(server._muse_is_interactive_process("node", "node /tmp/x.js"))
+
+    def test_opencode_interactive_process_detected(self):
+        self.assertTrue(server._opencode_is_interactive_process("opencode.exe", "opencode.exe"))
+        self.assertTrue(server._opencode_is_interactive_process("opencode", "opencode serve"))
+        self.assertFalse(server._opencode_is_interactive_process("opencode", "opencode run 'fix bug'"))
+        self.assertFalse(server._opencode_is_interactive_process("opencode", "opencode --help"))
+        self.assertFalse(server._opencode_is_interactive_process("node", "node server.js"))
+
+    def test_codebuddy_interactive_process_detected(self):
+        self.assertTrue(server._codebuddy_is_interactive_process("node", "node /Users/x/.local/bin/codebuddy"))
+        self.assertTrue(server._codebuddy_is_interactive_process("codebuddy", "codebuddy"))
+        self.assertFalse(server._codebuddy_is_interactive_process("node", "node /Users/x/.local/bin/codebuddy -p 'hi'"))
+        self.assertFalse(server._codebuddy_is_interactive_process("node", "node other.js"))
+
+    def test_proc_sync_adds_working_and_removes_dead(self):
+        now = time.time()
+        with mock.patch.object(server, "_pid_alive", return_value=True), \
+             mock.patch.object(server, "_cwd_for_pid", return_value="/tmp"), \
+             mock.patch.object(server, "_infer_terminal_from_pid", return_value=""):
+            cands = [{
+                "agent": "Muse", "session_id": "pid:111", "state": "Working",
+                "title": "", "cwd": "/tmp", "terminal": "",
+                "pid": 111, "synthetic": True,
+            }]
+            server._sync_proc_sessions(now, cands)
+            self.assertEqual(server._sessions[("Muse", "pid:111")]["state"], "Working")
+
+        with mock.patch.object(server, "_pid_alive", return_value=False):
+            server._sync_proc_sessions(now + 5, [])
+            self.assertNotIn(("Muse", "pid:111"), server._sessions)
+
+    def test_codebuddy_install_uninstall_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "settings.json"
+            with mock.patch.object(server, "CB_SETTINGS_PATH", path):
+                events = server.cb_install()
+                self.assertIn("UserPromptSubmit", events)
+                self.assertIn("Stop", events)
+                status = server.cb_status()
+                self.assertTrue(status["installed"])
+                # Idempotent-ish: purge-then-add keeps exactly one group per event.
+                server.cb_install()
+                d = server._load_json_settings(path)
+                for bucket in d["hooks"].values():
+                    self.assertEqual(len(bucket), 1)
+                removed = server.cb_uninstall()
+                self.assertIn("UserPromptSubmit", removed)
+                self.assertFalse(server.cb_status()["installed"])
+
+    def test_generic_agent_event_accepted(self):
+        ok, payload = server._apply_event({
+            "state": "Working",
+            "agent": "Mausbot",
+            "session_id": "bot-1",
+            "cwd": "/tmp",
+        })
+        self.assertTrue(ok)
+        self.assertEqual(server._sessions[("Mausbot", "bot-1")]["state"], "Working")
+
+
 if __name__ == "__main__":
     unittest.main()

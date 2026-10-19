@@ -3,8 +3,11 @@
 Agents Status bridge for SuperIsland.
 
 Tracks state per (agent, session_id) so the extension can render a list of
-active coding-agent sessions. Currently bridges Claude Code and Codex CLI
-through their official hook mechanisms.
+active coding-agent sessions. Bridges Claude Code, Codex CLI and CodeBuddy
+Code through their official hook mechanisms, plus process-based tracking
+for hook-less CLIs (Muse, OpenCode, CodeBuddy fallback): a live interactive
+process is a Working session, removed when the process exits. Any other
+producer (e.g. Mausbot) can POST /event with its own agent name.
 
 Raw-socket HTTP/1.1 server. Routes:
 
@@ -17,9 +20,9 @@ Raw-socket HTTP/1.1 server. Routes:
   POST /control/pause    stop accepting /event updates
   POST /control/resume   resume accepting /event updates
   GET  /control/status   {paused: bool}
-  POST /hooks/install    ?agent=claude|codex — merge hooks into the agent's config
-  POST /hooks/uninstall  ?agent=claude|codex — remove our hooks
-  GET  /hooks/status     ?agent=claude|codex — {installed, events}
+  POST /hooks/install    ?agent=claude|codex|codebuddy — merge hooks into the agent's config
+  POST /hooks/uninstall  ?agent=claude|codex|codebuddy — remove our hooks
+  GET  /hooks/status     ?agent=claude|codex|codebuddy — {installed, events}
 
 Working states auto-decay to Idle after WORKING_TIMEOUT seconds of silence.
 Codex turns stay Working across "thinking" gaps until Stop arrives or the
@@ -58,6 +61,9 @@ ERROR_DISPLAY_SECONDS = float(os.environ.get("AGENTS_STATUS_ERROR_DISPLAY_SECOND
 SESSION_TTL_DEFAULT = float(os.environ.get("AGENTS_STATUS_SESSION_TTL", "1800"))  # 30 min
 CODEX_SCAN_INTERVAL = float(os.environ.get("AGENTS_STATUS_CODEX_SCAN_INTERVAL", "1.0"))
 CLAUDE_SCAN_INTERVAL = float(os.environ.get("AGENTS_STATUS_CLAUDE_SCAN_INTERVAL", "1.0"))
+# Process-based tracking for CLIs without hook support (Muse, OpenCode,
+# CodeBuddy fallback). One shared cadence keeps `ps` overhead bounded.
+PROC_SCAN_INTERVAL = float(os.environ.get("AGENTS_STATUS_PROC_SCAN_INTERVAL", "2.0"))
 # When an explicit session-end event (or a pid-alive drop) closes a session,
 # remember its PID briefly so the next startup scan — which may still be
 # using a stale `ps` snapshot — doesn't resurrect a synthetic placeholder
@@ -84,6 +90,10 @@ BACKUP_SUFFIX = ".agents-status.bak"
 
 CC_SETTINGS_PATH = pathlib.Path.home() / ".claude" / "settings.json"
 CC_HOOK_MARKER = "# cc-status-hook"
+# CodeBuddy Code is Claude-compatible: identical hook schema (SessionStart,
+# UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd, Notification)
+# in ~/.codebuddy/settings.json.
+CB_SETTINGS_PATH = pathlib.Path.home() / ".codebuddy" / "settings.json"
 
 CODEX_CONFIG_PATH = pathlib.Path.home() / ".codex" / "config.toml"
 CODEX_HOOKS_PATH = pathlib.Path.home() / ".codex" / "hooks.json"
@@ -164,6 +174,9 @@ _last_codex_scan_results = []
 _claude_scan_lock = threading.Lock()
 _last_claude_scan_at = 0.0
 _last_claude_scan_results = []
+_proc_scan_lock = threading.Lock()
+_last_proc_scan_at = 0.0
+_last_proc_scan_results = []
 # pid -> unix-ts-when-entry-expires. Populated when a session is removed
 # explicitly (state=Ended) or pruned for a dead PID; checked by the
 # startup-scan sync so stale `ps` results don't resurrect the session.
@@ -532,6 +545,211 @@ def _sync_claude_startup_sessions(now, candidates):
             "agent": "Claude",
             "session_id": item["session_id"],
             "state": "Idle",
+            "title": (existing.get("title") or item.get("title") or "")[:200],
+            "cwd": item.get("cwd") or existing.get("cwd") or "",
+            "terminal": existing.get("terminal") or item.get("terminal") or "",
+            "pid": pid,
+            "turn_id": existing.get("turn_id"),
+            "turn_active": existing.get("turn_active", False),
+            "turn_started_at": existing.get("turn_started_at"),
+            "last_event": existing.get("last_event"),
+            "last_assistant_message": existing.get("last_assistant_message"),
+            "error_expires_at": existing.get("error_expires_at"),
+            "updated_at": now,
+            "synthetic": True,
+        }
+
+
+MUSE_NONINTERACTIVE_COMMANDS = frozenset((
+    "serve", "exec", "config", "export", "trace", "model-profile",
+    "skills", "voice", "plugins", "sandbox", "schema", "session-message",
+    "mcp", "auth", "login", "logout", "init",
+    "help", "--help", "-h", "--version", "-V",
+))
+OPENCODE_NONINTERACTIVE_COMMANDS = frozenset((
+    "run", "api", "upgrade", "update", "uninstall", "auth", "mcp",
+    "models", "stats", "debug", "session",
+    "help", "--help", "-h", "--version", "-V",
+))
+CODEBUDDY_NONINTERACTIVE_COMMANDS = frozenset((
+    "mcp", "doctor", "update",
+    "help", "--help", "-h", "--version", "-V",
+))
+CODEBUDDY_NONINTERACTIVE_FLAGS = ("-p", "--print")
+
+
+def _split_argv(args):
+    try:
+        return shlex.split(args or "")
+    except Exception:
+        return (args or "").split()
+
+
+def _first_positional(argv, flags_with_value=frozenset()):
+    i = 1
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            break
+        if token.startswith("-"):
+            if token.startswith("--") and "=" in token:
+                token = token.split("=", 1)[0]
+            if token in flags_with_value:
+                i += 2
+                continue
+            i += 1
+            continue
+        return token
+    return None
+
+
+def _muse_is_interactive_process(comm, args):
+    # `muse` is a bash launcher (comm=bash) that execs the muse-bin binary,
+    # so match the binary name in comm as well as the script path in argv.
+    argv = _split_argv(args)
+    bins = {os.path.basename((t or "").strip("\"'")) for t in argv[:2]}
+    bins.add(os.path.basename((comm or "").strip("\"'")))
+    if "muse" not in bins and not any(b.startswith("muse-bin") for b in bins):
+        return False
+    if any(t in ("-h", "--help", "-V", "--version") for t in argv[1:]):
+        return False
+    first = _first_positional(argv)
+    if first is None:
+        return True
+    return first not in MUSE_NONINTERACTIVE_COMMANDS
+
+
+_CODEBUDDY_BIN_NAMES = ("codebuddy", "cbc", "codebuddy-code", "codebuddy-lowmem")
+
+
+def _codebuddy_is_interactive_process(comm, args):
+    argv = _split_argv(args)
+    if not argv:
+        return False
+    # node shebang scripts surface as comm=node with the bin path in argv[1].
+    bins = {os.path.basename((t or "").strip("\"'")) for t in argv[:2]}
+    if not (bins & set(_CODEBUDDY_BIN_NAMES)):
+        if os.path.basename((comm or "").strip("\"'")) not in ("codebuddy", "cbc"):
+            return False
+    if any(t in ("-h", "--help", "-V", "--version") for t in argv[1:]):
+        return False
+    if any(f in argv[1:] for f in CODEBUDDY_NONINTERACTIVE_FLAGS):
+        return False  # one-shot -p/--print mode
+    first = _first_positional(argv)
+    if first is None:
+        return True
+    return first not in CODEBUDDY_NONINTERACTIVE_COMMANDS
+
+
+def _opencode_is_interactive_process(comm, args):
+    argv = _split_argv(args)
+    if not argv:
+        return False
+    comm_base = os.path.basename((comm or "").strip("\"'"))
+    first_base = os.path.basename((argv[0] or "").strip("\"'"))
+    if comm_base not in ("opencode", "opencode.exe"):
+        if first_base not in ("opencode", "opencode.exe"):
+            return False
+    if any(t in ("-h", "--help", "-V", "--version") for t in argv[1:]):
+        return False
+    first = _first_positional(argv)
+    if first is None:
+        return True  # interactive TUI
+    # `serve`/`web`/`acp` keep a live agent host behind them; everything
+    # else listed is a one-shot command.
+    return first not in OPENCODE_NONINTERACTIVE_COMMANDS
+
+
+def _scan_proc_candidates(now):
+    """One shared `ps` pass for hook-less CLIs.
+
+    A live interactive process IS the session: state Working while the PID
+    is alive. Hook-driven agents keep their richer semantics; these
+    synthetic entries only exist while no hook session owns the PID.
+    """
+    global _last_proc_scan_at, _last_proc_scan_results
+    with _proc_scan_lock:
+        if (now - _last_proc_scan_at) < PROC_SCAN_INTERVAL:
+            return [dict(item) for item in _last_proc_scan_results]
+        try:
+            res = subprocess.run(
+                ["ps", "-axo", "pid=,tty=,comm=,args="],
+                capture_output=True,
+                text=True,
+                timeout=0.8,
+                check=False,
+            )
+        except Exception:
+            _last_proc_scan_at = now
+            _last_proc_scan_results = []
+            return []
+
+        matchers = (
+            ("Muse", _muse_is_interactive_process),
+            ("OpenCode", _opencode_is_interactive_process),
+            ("CodeBuddy", _codebuddy_is_interactive_process),
+        )
+        found = []
+        for raw in (res.stdout or "").splitlines():
+            m = re.match(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s*(.*)$", raw)
+            if not m:
+                continue
+            pid_text, tty, comm, args = m.groups()
+            if tty in ("?", "??"):
+                continue
+            pid = int(pid_text)
+            for agent, is_interactive in matchers:
+                try:
+                    if is_interactive(comm, args):
+                        found.append({
+                            "agent": agent,
+                            "session_id": f"pid:{pid}",
+                            "state": "Working",
+                            "title": "",
+                            "cwd": _cwd_for_pid(pid),
+                            "terminal": _infer_terminal_from_pid(pid),
+                            "pid": pid,
+                            "synthetic": True,
+                        })
+                        break
+                except Exception:
+                    continue
+
+        _last_proc_scan_at = now
+        _last_proc_scan_results = [dict(item) for item in found]
+        return [dict(item) for item in found]
+
+
+def _sync_proc_sessions(now, candidates):
+    real_pids = set()
+    for s in _sessions.values():
+        if not s.get("synthetic") and s.get("pid"):
+            real_pids.add(s.get("pid"))
+
+    for key, s in list(_sessions.items()):
+        if not s.get("synthetic"):
+            continue
+        if s.get("agent") in ("Claude", "Codex"):
+            continue  # owned by their dedicated syncs
+        pid = s.get("pid")
+        if pid in real_pids:
+            # A hook session took over this process; drop the placeholder.
+            del _sessions[key]
+        elif _pid_recently_ended(pid or 0, now) or not _pid_alive(pid or 0):
+            del _sessions[key]
+
+    for item in candidates:
+        pid = item.get("pid")
+        if not pid or pid in real_pids:
+            continue
+        if _pid_recently_ended(pid, now) or not _pid_alive(pid):
+            continue
+        key = (item["agent"], item["session_id"])
+        existing = _sessions.get(key) or {}
+        _sessions[key] = {
+            "agent": item["agent"],
+            "session_id": item["session_id"],
+            "state": "Working",
             "title": (existing.get("title") or item.get("title") or "")[:200],
             "cwd": item.get("cwd") or existing.get("cwd") or "",
             "terminal": existing.get("terminal") or item.get("terminal") or "",
@@ -1171,11 +1389,13 @@ def _snapshot(ttl):
     now = time.time()
     codex_candidates = _scan_codex_startup_candidates(now)
     claude_candidates = _scan_claude_startup_candidates(now)
+    proc_candidates = _scan_proc_candidates(now)
     with _lock:
         _gc_recently_ended(now)
         _decay_working(now)
         _sync_codex_startup_sessions(now, codex_candidates)
         _sync_claude_startup_sessions(now, claude_candidates)
+        _sync_proc_sessions(now, proc_candidates)
         _mark_unexpected_codex_exits(now)
         _mark_unexpected_claude_exits(now)
         _prune(now, ttl)
@@ -1445,22 +1665,30 @@ def _cc_is_our_group(group):
     return False
 
 
-def _load_cc_settings():
-    if not CC_SETTINGS_PATH.exists():
+def _load_json_settings(path):
+    if not path.exists():
         return {}
     try:
-        text = CC_SETTINGS_PATH.read_text()
+        text = path.read_text()
         return json.loads(text) if text.strip() else {}
     except Exception as e:
-        sys.stderr.write(f"failed to parse {CC_SETTINGS_PATH}: {e}\n")
+        sys.stderr.write(f"failed to parse {path}: {e}\n")
         return {}
+
+
+def _save_json_settings(path, d):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(d, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def _load_cc_settings():
+    return _load_json_settings(CC_SETTINGS_PATH)
 
 
 def _save_cc_settings(d):
-    CC_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = CC_SETTINGS_PATH.with_suffix(CC_SETTINGS_PATH.suffix + ".tmp")
-    tmp.write_text(json.dumps(d, indent=2) + "\n")
-    tmp.replace(CC_SETTINGS_PATH)
+    _save_json_settings(CC_SETTINGS_PATH, d)
 
 
 def _backup_once(path, suffix):
@@ -1531,6 +1759,88 @@ def cc_status():
         if isinstance(bucket, list) and any(_cc_is_our_group(g) for g in bucket):
             present.append(event_name)
     primary = {"UserPromptSubmit", "PreToolUse", "PostToolUseFailure", "Stop", "SessionEnd", "PermissionRequest"}
+    return {"installed": primary.issubset(set(present)), "events": sorted(present)}
+
+
+# ---------------------------------------------------------------------------
+# CodeBuddy Code ~/.codebuddy/settings.json hook management
+# ---------------------------------------------------------------------------
+# CodeBuddy speaks the same hook schema as Claude Code, so we reuse
+# cc-event-hook.sh with AGENT_NAME/AGENT_PATTERN overrides and the same
+# canonical event set (minus PermissionRequest: CodeBuddy has its own
+# approval UX and our blocking AskUserQuestion flow is Claude-specific).
+
+def _cb_event_cmd(state):
+    return (
+        f"AGENT_NAME='CodeBuddy' AGENT_PATTERN='*codebuddy*|*cbc*' "
+        f"'{CC_HOOK_SCRIPT}' {state} {CC_HOOK_MARKER}"
+    )
+
+
+def _cb_canonical_events():
+    return {
+        "SessionStart":        _cb_event_cmd("Idle"),
+        "UserPromptSubmit":    _cb_event_cmd("Working"),
+        "PreToolUse":          _cb_event_cmd("Working"),
+        "PostToolUse":         _cb_event_cmd("Auto"),
+        "PostToolUseFailure":  _cb_event_cmd("ToolFail"),
+        "Notification":        _cb_event_cmd("Waiting"),
+        "Stop":                _cb_event_cmd("Idle"),
+        "SessionEnd":          _cb_event_cmd("Ended"),
+    }
+
+
+def cb_install():
+    cb_uninstall()
+    _backup_once(CB_SETTINGS_PATH, BACKUP_SUFFIX)
+    d = _load_json_settings(CB_SETTINGS_PATH)
+    hooks = d.setdefault("hooks", {})
+    installed = []
+    for event_name, command in _cb_canonical_events().items():
+        bucket = hooks.setdefault(event_name, [])
+        if not isinstance(bucket, list):
+            bucket = []
+            hooks[event_name] = bucket
+        bucket.append({"hooks": [{"type": "command", "command": command}]})
+        installed.append(event_name)
+    _save_json_settings(CB_SETTINGS_PATH, d)
+    return installed
+
+
+def cb_uninstall():
+    if not CB_SETTINGS_PATH.exists():
+        return []
+    d = _load_json_settings(CB_SETTINGS_PATH)
+    hooks = d.get("hooks") or {}
+    if not isinstance(hooks, dict):
+        return []
+    removed = []
+    for event_name in list(hooks.keys()):
+        bucket = hooks.get(event_name)
+        if not isinstance(bucket, list):
+            continue
+        before = len(bucket)
+        bucket[:] = [g for g in bucket if not _cc_is_our_group(g)]
+        if len(bucket) != before:
+            removed.append(event_name)
+        if not bucket:
+            del hooks[event_name]
+    if not hooks:
+        d.pop("hooks", None)
+    _save_json_settings(CB_SETTINGS_PATH, d)
+    return removed
+
+
+def cb_status():
+    d = _load_json_settings(CB_SETTINGS_PATH)
+    hooks = d.get("hooks") or {}
+    if not isinstance(hooks, dict):
+        return {"installed": False, "events": []}
+    present = []
+    for event_name, bucket in hooks.items():
+        if isinstance(bucket, list) and any(_cc_is_our_group(g) for g in bucket):
+            present.append(event_name)
+    primary = {"UserPromptSubmit", "PreToolUse", "PostToolUseFailure", "Stop", "SessionEnd"}
     return {"installed": primary.issubset(set(present)), "events": sorted(present)}
 
 
@@ -1927,7 +2237,7 @@ def _parse_query(path):
 
 def _agent_param(params):
     a = (params.get("agent") or "claude").strip().lower()
-    return a if a in ("claude", "codex") else "claude"
+    return a if a in ("claude", "codex", "codebuddy") else "claude"
 
 
 def _ttl_param(params):
@@ -2476,7 +2786,8 @@ def _route_get(path):
         return _build_response(200, "OK", {"paused": _paused})
     if path_only == "/hooks/status":
         try:
-            fn = codex_status if _agent_param(params) == "codex" else cc_status
+            agent = _agent_param(params)
+            fn = codex_status if agent == "codex" else (cb_status if agent == "codebuddy" else cc_status)
             return _build_response(200, "OK", fn())
         except Exception as e:
             return _build_response(500, "Internal Error", {"error": str(e)})
@@ -2515,14 +2826,24 @@ def _route_post(path, body_bytes):
     if path_only == "/hooks/install":
         try:
             agent = _agent_param(params)
-            events = codex_install() if agent == "codex" else cc_install()
+            if agent == "codex":
+                events = codex_install()
+            elif agent == "codebuddy":
+                events = cb_install()
+            else:
+                events = cc_install()
             return _build_response(200, "OK", {"ok": True, "agent": agent, "events": events})
         except Exception as e:
             return _build_response(500, "Internal Error", {"error": str(e)})
     if path_only == "/hooks/uninstall":
         try:
             agent = _agent_param(params)
-            events = codex_uninstall() if agent == "codex" else cc_uninstall()
+            if agent == "codex":
+                events = codex_uninstall()
+            elif agent == "codebuddy":
+                events = cb_uninstall()
+            else:
+                events = cc_uninstall()
             return _build_response(200, "OK", {"ok": True, "agent": agent, "removed": events})
         except Exception as e:
             return _build_response(500, "Internal Error", {"error": str(e)})

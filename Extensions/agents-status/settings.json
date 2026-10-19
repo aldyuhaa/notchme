@@ -16,6 +16,13 @@
           "label": "Codex CLI",
           "default": true,
           "description": "Enable official Codex hooks by setting features.codex_hooks in ~/.codex/config.toml and installing command hooks in ~/.codex/hooks.json for Working / Idle / Error tracking."
+        },
+        {
+          "type": "toggle",
+          "key": "hooksCodeBuddy",
+          "label": "CodeBuddy Code",
+          "default": true,
+          "description": "Install Claude-compatible hooks into ~/.codebuddy/settings.json to track CodeBuddy session state (Working / Waiting / Idle / Error)."
         }
       ]
     },

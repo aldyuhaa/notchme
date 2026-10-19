@@ -11,14 +11,20 @@ set -u
 STATE="${1:-Working}"
 PORT="${AGENTS_STATUS_PORT:-7823}"
 
+# AGENT_NAME / AGENT_PATTERN let Claude-compatible CLIs (e.g. CodeBuddy)
+# reuse this script: AGENT_PATTERN is a case-alternation like
+# '*codebuddy*|*cbc*' matched against ancestor process names.
+AGENT_NAME="${AGENT_NAME:-Claude}"
+AGENT_PATTERN="${AGENT_PATTERN:-*claude*|*Claude*}"
 find_agent_pid() {
   local pid=$PPID
   local max=6
   while [ "$max" -gt 0 ] && [ -n "$pid" ] && [ "$pid" -gt 1 ]; do
     local name
     name=$(ps -o comm= -p "$pid" 2>/dev/null)
+    # shellcheck disable=SC2053
     case "$name" in
-      *claude*|*Claude*) echo "$pid"; return 0 ;;
+      $AGENT_PATTERN) echo "$pid"; return 0 ;;
     esac
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
     max=$((max - 1))
@@ -128,7 +134,7 @@ except Exception:
 
 sys.stdout.write(json.dumps({
     "state": state,
-    "agent": "Claude",
+    "agent": os.environ.get("AGENT_NAME", "Claude"),
     "session_id": session_id,
     "cwd": cwd,
     "title": title,
@@ -140,7 +146,7 @@ PY
 )
 
 if [ -z "${payload:-}" ]; then
-  payload="{\"state\":\"${STATE}\",\"agent\":\"Claude\"}"
+  payload="{\"state\":\"${STATE}\",\"agent\":\"${AGENT_NAME}\"}"
 fi
 
 # SessionEnd: Claude Code is quitting, so run curl synchronously — a

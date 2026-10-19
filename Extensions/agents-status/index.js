@@ -7,6 +7,7 @@ var BASE = "http://127.0.0.1:" + PORT;
 var POLL_INTERVAL_MS = 800;
 var SETTING_HOOKS_CC = "hooksClaudeCode";
 var SETTING_HOOKS_CODEX = "hooksCodex";
+var SETTING_HOOKS_CODEBUDDY = "hooksCodeBuddy";
 var SETTING_SOUND_ALERT = "soundAlert";
 var SETTING_SOUND_PACK = "soundPack";
 var DEFAULT_SOUND_PACK = "8bit";
@@ -36,6 +37,7 @@ var currentState = "Idle";   // derived from top session (for compact view)
 var bridgeOnline = false;
 var hooksCC = false;
 var hooksCodex = false;
+var hooksCodeBuddy = false;
 var activationFailed = false;
 var offlineWarningSent = false;
 var inFlight = false;
@@ -187,7 +189,18 @@ function stateDescription(s, online) {
 // "Claude" / "Codex" tone in the pill.
 function agentAccent(agent) {
   if (agent === "Codex") return { r: 0.40, g: 0.80, b: 0.55, a: 1 };
+  if (agent === "CodeBuddy") return { r: 0.35, g: 0.65, b: 1.00, a: 1 };
+  if (agent === "Muse") return { r: 0.75, g: 0.55, b: 1.00, a: 1 };
+  if (agent === "OpenCode") return { r: 1.00, g: 0.80, b: 0.30, a: 1 };
+  if (agent === "Mausbot") return { r: 1.00, g: 0.45, b: 0.60, a: 1 };
   return { r: 0.92, g: 0.55, b: 0.35, a: 1 }; // Claude (warm)
+}
+
+function agentDisplayName(agent) {
+  if (agent === "claude") return "Claude";
+  if (agent === "codex") return "Codex";
+  if (agent === "codebuddy") return "CodeBuddy";
+  return agent || "Claude";
 }
 
 // "1 Mission Park Dr" style trim — last path segment, unless it's $HOME.
@@ -661,6 +674,7 @@ function reconcileHooks(agent, want) {
       if (ok) {
         if (agent === "claude") hooksCC = !!want;
         else if (agent === "codex") hooksCodex = !!want;
+        else if (agent === "codebuddy") hooksCodeBuddy = !!want;
         dlog(agent + " hooks " + (want ? "installed" : "uninstalled"));
         return;
       }
@@ -671,7 +685,7 @@ function reconcileHooks(agent, want) {
       // reaches the user from JS without them opening the expanded view.
       try {
         SuperIsland.notifications.send({
-          title: (agent === "codex" ? "Codex" : "Claude") + " hooks failed",
+          title: agentDisplayName(agent) + " hooks failed",
           body: err,
           id: "agents-status-hooks-error-" + agent,
           systemNotification: true
@@ -682,7 +696,7 @@ function reconcileHooks(agent, want) {
       dlog(agent + " hooks reconcile threw: " + e);
       try {
         SuperIsland.notifications.send({
-          title: (agent === "codex" ? "Codex" : "Claude") + " hooks bridge error",
+          title: agentDisplayName(agent) + " hooks bridge error",
           body: String(e),
           id: "agents-status-hooks-error-" + agent,
           systemNotification: true
@@ -694,6 +708,7 @@ function reconcileHooks(agent, want) {
 function applyAllHooks() {
   reconcileHooks("claude", settingBool(SETTING_HOOKS_CC, true));
   reconcileHooks("codex",  settingBool(SETTING_HOOKS_CODEX, true));
+  reconcileHooks("codebuddy", settingBool(SETTING_HOOKS_CODEBUDDY, true));
 }
 
 function startPolling() {
@@ -745,6 +760,7 @@ SuperIsland.registerModule({
     dlog("setting " + key + " -> " + value);
     if (key === SETTING_HOOKS_CC)    reconcileHooks("claude", !!value);
     else if (key === SETTING_HOOKS_CODEX) reconcileHooks("codex",  !!value);
+    else if (key === SETTING_HOOKS_CODEBUDDY) reconcileHooks("codebuddy", !!value);
     else if (key === SETTING_SOUND_ALERT && !!value) {
       // Audition all three events so the user hears the full pack.
       playSoundTone("start");
