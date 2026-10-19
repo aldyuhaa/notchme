@@ -15,6 +15,8 @@ Currently bridges:
 - **Muse** (`muse`) — process-based: Working while an interactive session
   is alive (no hook mechanism available)
 - **OpenCode** (`opencode`) — process-based, TUI and `serve` included
+- **T3 Code** — reads its local run database (`~/.t3/userdata/statev2.sqlite`)
+  read-only: running → Working, waiting → Waiting, failed → Error, done → gone
 - **Mausbot and friends** — generic: any producer can POST events (see below)
 
 ## How it works

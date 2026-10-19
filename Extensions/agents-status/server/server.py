@@ -765,6 +765,121 @@ def _sync_proc_sessions(now, candidates):
         }
 
 
+# ---------------------------------------------------------------------------
+# T3 Code run tracking via its local state database
+# ---------------------------------------------------------------------------
+# T3 Code (desktop) records every agent run in ~/.t3/userdata/statev2.sqlite
+# (orchestration_v2_projection_runs). Polling it read-only gives exact
+# per-thread status with zero hooks: running → Working, waiting → Waiting,
+# failed → Error (auto-cleared), completed/interrupted → removed.
+T3_STATE_DB = pathlib.Path.home() / ".t3" / "userdata" / "statev2.sqlite"
+T3_ACTIVE_STATUSES = ("queued", "preparing", "starting", "running", "waiting")
+T3_STATE_MAP = {
+    "queued": "Working",
+    "preparing": "Working",
+    "starting": "Working",
+    "running": "Working",
+    "waiting": "Waiting",
+    "failed": "Error",
+}
+
+
+def _t3_db_path():
+    return os.environ.get("AGENTS_STATUS_T3_STATE_DB") or str(T3_STATE_DB)
+
+
+def _scan_t3_runs():
+    """Read-only poll of T3 Code run states. Never raises; [] when T3 is
+    absent or its DB is unreadable."""
+    db = _t3_db_path()
+    try:
+        if not os.path.exists(db):
+            return []
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+        try:
+            cur = con.cursor()
+            cur.execute(
+                "SELECT r.run_id, r.thread_id, r.provider, r.status,"
+                " t.title, t.worktree_path"
+                " FROM orchestration_v2_projection_runs r"
+                " LEFT JOIN projection_threads t"
+                " ON t.thread_id = r.thread_id"
+                " WHERE r.status IN ('queued','preparing','starting',"
+                "'running','waiting','failed')"
+            )
+            rows = cur.fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return []
+    found = []
+    for run_id, thread_id, provider, status, title, worktree in rows or []:
+        state = T3_STATE_MAP.get(status)
+        if not state:
+            continue
+        label = (provider or "").strip() or "agent"
+        found.append({
+            "agent": "T3 Code",
+            "session_id": f"t3:{thread_id or run_id}",
+            "state": state,
+            "title": f"{label} · {(title or '').strip()}".strip(" ·")[:200],
+            "cwd": worktree or "",
+            "terminal": "",
+            "pid": None,
+            "synthetic": True,
+        })
+    return found
+
+
+# Failed T3 rows persist in the DB forever, so an Error pill must be
+# surfaced exactly once per run — otherwise it would pin itself permanently.
+_t3_error_seen = set()
+
+
+def _sync_t3_sessions(now, candidates):
+    if len(_t3_error_seen) > 500:
+        _t3_error_seen.clear()
+    live_keys = set()
+    for item in candidates:
+        key = (item["agent"], item["session_id"])
+        live_keys.add(key)
+        if item["state"] == "Error":
+            if key in _t3_error_seen or key in _sessions:
+                continue
+            _t3_error_seen.add(key)
+        existing = _sessions.get(key) or {}
+        entry = {
+            "agent": item["agent"],
+            "session_id": item["session_id"],
+            "state": item["state"],
+            "title": (item.get("title") or existing.get("title") or "")[:200],
+            "cwd": item.get("cwd") or existing.get("cwd") or "",
+            "terminal": existing.get("terminal") or item.get("terminal") or "",
+            "pid": None,
+            "turn_id": existing.get("turn_id"),
+            "turn_active": item["state"] in ("Working", "Waiting"),
+            "turn_started_at": existing.get("turn_started_at") or now,
+            "last_event": existing.get("last_event"),
+            "last_assistant_message": existing.get("last_assistant_message"),
+            "error_expires_at": (
+                now + ERROR_DISPLAY_SECONDS
+                if item["state"] == "Error"
+                else existing.get("error_expires_at")
+            ),
+            "updated_at": now,
+            "synthetic": True,
+        }
+        if item["state"] != "Error":
+            entry["error_expires_at"] = None
+        _sessions[key] = entry
+
+    for key, s in list(_sessions.items()):
+        if s.get("agent") != "T3 Code" or not s.get("synthetic"):
+            continue
+        if key not in live_keys:
+            del _sessions[key]
+
+
 def _tail_text(path, max_bytes=65536):
     if not path:
         return ""
@@ -1390,12 +1505,14 @@ def _snapshot(ttl):
     codex_candidates = _scan_codex_startup_candidates(now)
     claude_candidates = _scan_claude_startup_candidates(now)
     proc_candidates = _scan_proc_candidates(now)
+    t3_candidates = _scan_t3_runs()
     with _lock:
         _gc_recently_ended(now)
         _decay_working(now)
         _sync_codex_startup_sessions(now, codex_candidates)
         _sync_claude_startup_sessions(now, claude_candidates)
         _sync_proc_sessions(now, proc_candidates)
+        _sync_t3_sessions(now, t3_candidates)
         _mark_unexpected_codex_exits(now)
         _mark_unexpected_claude_exits(now)
         _prune(now, ttl)

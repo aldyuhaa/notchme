@@ -193,6 +193,7 @@ function agentAccent(agent) {
   if (agent === "Muse") return { r: 0.75, g: 0.55, b: 1.00, a: 1 };
   if (agent === "OpenCode") return { r: 1.00, g: 0.80, b: 0.30, a: 1 };
   if (agent === "Mausbot") return { r: 1.00, g: 0.45, b: 0.60, a: 1 };
+  if (agent === "T3 Code") return { r: 0.55, g: 0.85, b: 1.00, a: 1 };
   return { r: 0.92, g: 0.55, b: 0.35, a: 1 }; // Claude (warm)
 }
 

@@ -177,5 +177,68 @@ class AgentsStatusServerTests(unittest.TestCase):
         self.assertEqual(server._sessions[("Mausbot", "bot-1")]["state"], "Working")
 
 
+    def _make_t3_db(self, path):
+        con = server.sqlite3.connect(str(path))
+        con.execute(
+            "CREATE TABLE orchestration_v2_projection_runs ("
+            "run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, ordinal INTEGER NOT NULL,"
+            " provider TEXT NOT NULL, provider_thread_id TEXT, status TEXT NOT NULL,"
+            " requested_at TEXT NOT NULL, completed_at TEXT, payload_json TEXT NOT NULL,"
+            " provider_instance_id TEXT)"
+        )
+        con.execute(
+            "CREATE TABLE projection_threads (thread_id TEXT PRIMARY KEY,"
+            " project_id TEXT NOT NULL, title TEXT NOT NULL, worktree_path TEXT)"
+        )
+        return con
+
+    def test_t3_scan_maps_statuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "statev2.sqlite"
+            con = self._make_t3_db(path)
+            con.execute(
+                "INSERT INTO orchestration_v2_projection_runs VALUES"
+                " ('r1','t1',1,'muse',NULL,'running','2026-01-01',NULL,'{}',NULL),"
+                " ('r2','t2',1,'codex',NULL,'waiting','2026-01-01',NULL,'{}',NULL),"
+                " ('r3','t3',1,'muse',NULL,'failed','2026-01-01',NULL,'{}',NULL),"
+                " ('r4','t4',1,'muse',NULL,'completed','2026-01-01','2026-01-02','{}',NULL)"
+            )
+            con.execute(
+                "INSERT INTO projection_threads VALUES"
+                " ('t1','p','Fix login','/tmp/proj')"
+            )
+            con.commit()
+            con.close()
+            with mock.patch.object(server, "_t3_db_path", return_value=str(path)):
+                found = server._scan_t3_runs()
+        by_session = {f["session_id"]: f for f in found}
+        self.assertEqual(by_session["t3:t1"]["state"], "Working")
+        self.assertEqual(by_session["t3:t1"]["cwd"], "/tmp/proj")
+        self.assertEqual(by_session["t3:t2"]["state"], "Waiting")
+        self.assertEqual(by_session["t3:t3"]["state"], "Error")
+        self.assertNotIn("t3:t4", by_session)
+
+    def test_t3_failed_error_surfaced_once(self):
+        now = time.time()
+        item = {
+            "agent": "T3 Code", "session_id": "t3:t9", "state": "Error",
+            "title": "x", "cwd": "", "terminal": "", "pid": None, "synthetic": True,
+        }
+        server._sync_t3_sessions(now, [item])
+        self.assertEqual(server._sessions[("T3 Code", "t3:t9")]["state"], "Error")
+        # Error expires and prunes...
+        server._sessions[("T3 Code", "t3:t9")]["error_expires_at"] = now - 1
+        server._sessions[("T3 Code", "t3:t9")]["updated_at"] = now - 9999
+        server._prune(now, ttl=10.0)
+        self.assertNotIn(("T3 Code", "t3:t9"), server._sessions)
+        # ...and must NOT come back while the failed row persists.
+        server._sync_t3_sessions(now + 1, [item])
+        self.assertNotIn(("T3 Code", "t3:t9"), server._sessions)
+
+    def test_t3_missing_db_returns_empty(self):
+        with mock.patch.object(server, "_t3_db_path", return_value="/nonexistent/statev2.sqlite"):
+            self.assertEqual(server._scan_t3_runs(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
