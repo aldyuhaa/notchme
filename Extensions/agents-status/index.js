@@ -66,48 +66,70 @@ var WHITE_35 = { r: 1, g: 1, b: 1, a: 0.35 };
 var CHIP_BG = { r: 1, g: 1, b: 1, a: 0.08 };
 
 // --- Pixel patterns ------------------------------------------------------
+// Original 5x5 notch-buddy: a round blob whose face changes with agent
+// state. Body takes the agent's accent color, face takes the state color.
 var W = 5, H = 5;
-var QMARK  = { 1:1, 2:1, 3:1, 5:1, 9:1, 12:1, 13:1, 17:1, 22:1 };
-var CURSOR = { 11:1, 12:1, 13:1, 16:1, 17:1, 18:1 };
-var XPAT   = { 0:1, 4:1, 6:1, 8:1, 12:1, 16:1, 18:1, 20:1, 24:1 };
+var BUDDY_BODY = { 1:1, 2:1, 3:1, 5:1, 6:1, 7:1, 8:1, 9:1, 10:1, 11:1, 12:1, 13:1, 14:1, 15:1, 16:1, 17:1, 18:1, 19:1, 21:1, 22:1, 23:1 };
+var BUDDY_BODY_UP = { 0:1, 1:1, 2:1, 3:1, 4:1, 5:1, 6:1, 7:1, 8:1, 9:1, 10:1, 11:1, 12:1, 13:1, 14:1, 16:1, 17:1, 18:1 };
+var BUDDY_EYES = { 6:1, 8:1 };
+var BUDDY_EYES_UP = { 1:1, 3:1 };
+var BUDDY_SMILE = { 16:1, 18:1, 22:1 };
+var BUDDY_SMILE_UP = { 11:1, 13:1, 17:1 };
+var BUDDY_MOUTH_OPEN = { 17:1 };
+var BUDDY_FROWN = { 21:1, 23:1 };
 var CHECK  = { 4:1, 8:1, 10:1, 12:1, 16:1 };
 var OFFLINE_GLYPH = { 2:1, 7:1, 12:1, 22:1 };
 
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 function withAlpha(c, a) { return { r: c.r, g: c.g, b: c.b, a: clamp01(a) }; }
 
+// Returns { alpha: [25], face: {index:1}, bodyAlpha } — face cells render in
+// the state color, body cells in the agent accent (or state color fallback).
 function computeAlphas(state, t, online) {
-  var out = new Array(25);
+  var alpha = new Array(25);
+  var face = {};
+  var bodyAlpha = 1;
   var i;
+  for (i = 0; i < 25; i++) alpha[i] = 0;
   if (!online) {
     var blink = Math.sin(t / 450) > 0;
-    for (i = 0; i < 25; i++) out[i] = OFFLINE_GLYPH[i] ? (blink ? 1.0 : 0.35) : 0;
-    return out;
+    for (i = 0; i < 25; i++) alpha[i] = OFFLINE_GLYPH[i] ? (blink ? 1.0 : 0.35) : 0;
+    return { alpha: alpha, face: face, bodyAlpha: 0 };
   }
   if (state === "Working") {
-    for (i = 0; i < 25; i++) {
-      var x = i % W, y = (i / W) | 0;
-      var dx = x - 2, dy = y - 2;
-      var d = Math.sqrt(dx * dx + dy * dy);
-      var v = Math.sin(t / 400 - d * 1.2) * 0.5 + 0.5;
-      out[i] = v > 0.3 ? (v * 0.9 + 0.1) : 0;
-    }
+    // Bounce: alternate grounded / jumped frames; blink every ~3.6s.
+    var jumped = (Math.floor(t / 450) % 2) === 1;
+    var body = jumped ? BUDDY_BODY_UP : BUDDY_BODY;
+    var eyes = jumped ? BUDDY_EYES_UP : BUDDY_EYES;
+    var mouth = jumped ? BUDDY_SMILE_UP : BUDDY_SMILE;
+    var eyesClosed = (t % 3600) < 180;
+    for (var k in body) { if (body.hasOwnProperty(k)) alpha[k] = 0.95; }
+    bodyAlpha = 0.95;
+    if (!eyesClosed) for (var e in eyes) { if (eyes.hasOwnProperty(e)) { alpha[e] = 1; face[e] = 1; } }
+    for (var m in mouth) { if (mouth.hasOwnProperty(m)) { alpha[m] = 1; face[m] = 1; } }
   } else if (state === "Waiting") {
-    var b = Math.sin(t / 500) > 0;
-    for (i = 0; i < 25; i++) out[i] = QMARK[i] ? (b ? 1.0 : 0.3) : 0;
+    var pulse = 0.75 + 0.25 * Math.sin(t / 300);
+    for (var w in BUDDY_BODY) { if (BUDDY_BODY.hasOwnProperty(w)) alpha[w] = 0.9; }
+    bodyAlpha = 0.9;
+    for (var we in BUDDY_EYES) { if (BUDDY_EYES.hasOwnProperty(we)) { alpha[we] = pulse; face[we] = 1; } }
+    alpha[17] = pulse; face[17] = 1; // open mouth
   } else if (state === "Idle") {
-    var on = (t % 1060) < 600;
-    for (i = 0; i < 25; i++) out[i] = CURSOR[i] ? (on ? 0.9 : 0) : 0;
+    // Sleeping: no face, slow breathing body.
+    var breath = 0.32 + 0.20 * (0.5 + 0.5 * Math.sin(t / 900));
+    for (var s in BUDDY_BODY) { if (BUDDY_BODY.hasOwnProperty(s)) alpha[s] = breath; }
+    bodyAlpha = breath;
   } else if (state === "Error") {
-    var pulse = Math.sin(t / 300) * 0.25 + 0.75;
-    for (i = 0; i < 25; i++) out[i] = XPAT[i] ? pulse : 0;
+    // Angry: pulsing body, glowing eyes + frown.
+    var epulse = 0.55 + 0.45 * Math.abs(Math.sin(t / 220));
+    for (var n in BUDDY_BODY) { if (BUDDY_BODY.hasOwnProperty(n)) alpha[n] = epulse; }
+    bodyAlpha = epulse;
+    for (var fe in BUDDY_EYES) { if (BUDDY_EYES.hasOwnProperty(fe)) { alpha[fe] = 1; face[fe] = 1; } }
+    for (var ff in BUDDY_FROWN) { if (BUDDY_FROWN.hasOwnProperty(ff)) { alpha[ff] = 1; face[ff] = 1; } }
   } else if (state === "Done") {
     var glow = Math.sin(t / 360) * 0.15 + 0.85;
-    for (i = 0; i < 25; i++) out[i] = CHECK[i] ? glow : 0;
-  } else {
-    for (i = 0; i < 25; i++) out[i] = 0;
+    for (var c in CHECK) { if (CHECK.hasOwnProperty(c)) { alpha[c] = glow; face[c] = 1; } }
   }
-  return out;
+  return { alpha: alpha, face: face, bodyAlpha: bodyAlpha };
 }
 
 // --- Pixel view builders -------------------------------------------------
@@ -117,30 +139,33 @@ function cell(pixelSize, color, radius) {
   return View.cornerRadius(View.background(box, color), radius);
 }
 
-function pixelGrid(state, online, pixelSize, gap) {
+function pixelGrid(state, online, pixelSize, gap, agent) {
   var t = Date.now();
-  var alphas = computeAlphas(state, t, online);
-  var base = online ? (COLORS[state] || COLORS.Idle) : (activationFailed ? { r: 0.98, g: 0.42, b: 0.42, a: 1 } : OFFLINE);
+  var frame = computeAlphas(state, t, online);
+  var faceBase = online ? (COLORS[state] || COLORS.Idle) : (activationFailed ? { r: 0.98, g: 0.42, b: 0.42, a: 1 } : OFFLINE);
+  var bodyBase = (online && agent) ? agentAccent(agent) : faceBase;
   var radius = Math.max(1, pixelSize * 0.18);
   var rows = [];
   for (var y = 0; y < H; y++) {
     var row = [];
     for (var x = 0; x < W; x++) {
       var i = y * W + x;
-      var a = alphas[i];
-      row.push(a > 0.01 ? cell(pixelSize, withAlpha(base, a), radius) : cell(pixelSize, null, 0));
+      var a = frame.alpha[i];
+      if (!(a > 0.01)) { row.push(cell(pixelSize, null, 0)); continue; }
+      var paint = frame.face[i] ? faceBase : bodyBase;
+      row.push(cell(pixelSize, withAlpha(paint, a), radius));
     }
     rows.push(View.hstack(row, { spacing: gap, align: "center" }));
   }
   return View.vstack(rows, { spacing: gap, align: "center" });
 }
 
-function pixelBox(state, online, outerSize) {
+function pixelBox(state, online, outerSize, agent) {
   var pad = Math.max(3, Math.floor(outerSize * 0.14));
   var inner = outerSize - pad * 2;
   var gap = 1;
   var pixelSize = Math.max(2, Math.floor((inner - gap * 4) / 5));
-  var grid = pixelGrid(state, online, pixelSize, gap);
+  var grid = pixelGrid(state, online, pixelSize, gap, agent);
   return View.cornerRadius(
     View.background(
       View.frame(grid, { width: outerSize, height: outerSize, alignment: "center" }),
@@ -315,7 +340,7 @@ function questionCard(s, pixelSize) {
   if (!p) return null;
 
   var topLine = [];
-  topLine.push(pixelBox("Waiting", true, pixelSize));
+  topLine.push(pixelBox("Waiting", true, pixelSize, s.agent));
   var headerText = p.header || "Question";
   var labelChipChildren = [chip((s.agent || "Claude"), agentAccent(s.agent || "Claude"))];
   if (s.terminal) labelChipChildren.push(chip(s.terminal, WHITE_65));
@@ -324,7 +349,7 @@ function questionCard(s, pixelSize) {
     View.text(cwdShort(s.cwd) || displayTitleFor(s), { style: "footnote", color: WHITE_50, lineLimit: 1 })
   ], { spacing: 1, align: "leading" });
   var rowHead = View.hstack([
-    pixelBox("Waiting", true, pixelSize),
+    pixelBox("Waiting", true, pixelSize, s.agent),
     View.frame(titleStack, { maxWidth: 9999, alignment: "leading" }),
     View.hstack(labelChipChildren, { spacing: 4, align: "center" })
   ], { spacing: 8, align: "center" });
@@ -381,7 +406,7 @@ function sessionRow(s, pixelSize, showCwd, tappable) {
   chips.push(View.text(relativeTime(s.updated_at), { style: "footnote", color: WHITE_40 }));
 
   var row = View.hstack([
-    pixelBox(effectiveState(s), true, pixelSize),
+    pixelBox(effectiveState(s), true, pixelSize, s.agent),
     View.frame(
       View.vstack(textCol, { spacing: 1, align: "leading" }),
       { maxWidth: 9999, alignment: "leading" }
@@ -424,9 +449,11 @@ function settingBool(key, fallback) {
 }
 
 // --- Derived top-session -------------------------------------------------
+var currentAgent = null; // agent of the session behind currentState
 function recomputeTop() {
   if (!sessions || sessions.length === 0) {
     currentState = "Idle";
+    currentAgent = null;
     return;
   }
   // If any session is currently in the green "Done" window, surface that in the
@@ -435,10 +462,12 @@ function recomputeTop() {
   for (var i = 0; i < sessions.length; i++) {
     if (effectiveState(sessions[i]) === "Done") {
       currentState = "Done";
+      currentAgent = sessions[i].agent || null;
       return;
     }
   }
   currentState = sessions[0].state || "Idle";
+  currentAgent = sessions[0].agent || null;
 }
 
 // --- Sound alerts --------------------------------------------------------
@@ -807,7 +836,7 @@ SuperIsland.registerModule({
   // -- minimalCompact (notched Macs) --
   minimalCompact: {
     leading: function () {
-      return View.frame(pixelBox(currentState, bridgeOnline, 24), { width: 24, height: 24, alignment: "center" });
+      return View.frame(pixelBox(currentState, bridgeOnline, 24, currentAgent), { width: 24, height: 24, alignment: "center" });
     },
     trailing: function () {
       if (!bridgeOnline) {
@@ -850,7 +879,7 @@ SuperIsland.registerModule({
       labelColor = WHITE_50;
     }
     return View.hstack([
-      pixelBox(currentState, true, 26),
+      pixelBox(currentState, true, 26, currentAgent),
       View.text(label, { style: "caption", color: labelColor })
     ], { spacing: 6, align: "center" });
   },
