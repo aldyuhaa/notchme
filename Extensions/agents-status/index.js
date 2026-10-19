@@ -259,63 +259,106 @@ function bigCardSession() {
   return sessions.length > 0 ? sessions[0] : null;
 }
 
-function cardBG(view) {
+// Fixed cell metrics keep both grids on the same rhythm: every mini card is
+// exactly miniW x miniH, and the big card matches the grid's block height so
+// the two columns share a top edge instead of floating at odd offsets.
+var CARD_DRAWER = {
+  bigW: 196, bigMinH: 80, bigArt: 40, bigGap: 8, titleLines: 1,
+  miniW: 78, miniH: 37, miniArt: 20, cols: 2, gap: 6, maxMini: 4
+};
+var CARD_DETAIL = {
+  bigW: 240, bigMinH: 90, bigArt: 50, bigGap: 10, titleLines: 2,
+  miniW: 92, miniH: 90, miniArt: 40, cols: 4, gap: 8, maxMini: 9999
+};
+
+function cardBG(view, w, h, align) {
+  var sized = View.frame(view, { width: w, height: h, alignment: align || "center" });
   return View.cornerRadius(
-    View.background(view, { r: 1, g: 1, b: 1, a: 0.06 }),
+    View.background(sized, { r: 1, g: 1, b: 1, a: 0.06 }),
     12
   );
 }
 
-function bigCard(s) {
+function bigCard(s, p, bigH) {
   var st = effectiveState(s);
   var accent = stateAccent(st, true);
   var title = View.vstack([
     View.text(s.agent || "Agent", { style: "headline", color: "white", lineLimit: 1 }),
     View.text(st === "Done" ? "done" : st.toLowerCase(), { style: "caption", color: accent, lineLimit: 1 }),
-    View.text(displayTitleFor(s), { style: "footnote", color: WHITE_65, lineLimit: 2 }),
+    View.text(displayTitleFor(s), { style: "footnote", color: WHITE_65, lineLimit: p.titleLines }),
     View.text(((s.terminal ? s.terminal + " · " : "") + relativeTime(s.updated_at)), { style: "footnote", color: WHITE_40, lineLimit: 1 })
   ], { spacing: 2, align: "leading" });
   var inner = View.hstack([
-    pixelBox(st, true, 64, s.agent),
+    pixelBox(st, true, p.bigArt, s.agent),
     View.frame(title, { maxWidth: 9999, alignment: "leading" })
   ], { spacing: 10, align: "center" });
-  var padded = View.padding(View.padding(inner, { edges: "horizontal", amount: 10 }), { edges: "vertical", amount: 10 });
-  if (!isSessionFocusable(s)) return cardBG(padded);
-  return View.button(cardBG(padded), focusActionID(s));
+  var padded = View.padding(View.padding(inner, { edges: "horizontal", amount: 10 }), { edges: "vertical", amount: 8 });
+  var card = cardBG(padded, p.bigW, bigH, "leading");
+  if (!isSessionFocusable(s)) return card;
+  return View.button(card, focusActionID(s));
 }
 
-function miniCard(s, isPinned) {
+function miniCard(s, isPinned, p) {
   var label = s.agent || "Agent";
   var inner = View.vstack([
-    pixelBox(effectiveState(s), true, 30, s.agent),
+    pixelBox(effectiveState(s), true, p.miniArt, s.agent),
     View.text((isPinned ? "● " : "") + label, { style: "caption", color: isPinned ? "white" : WHITE_65, lineLimit: 1 })
-  ], { spacing: 3, align: "center" });
-  var padded = View.padding(View.padding(inner, { edges: "horizontal", amount: 8 }), { edges: "vertical", amount: 6 });
-  return View.button(cardBG(padded), pinActionID(s));
+  ], { spacing: 2, align: "center" });
+  var padded = View.padding(inner, { edges: "all", amount: 5 });
+  return View.button(cardBG(padded, p.miniW, p.miniH, "center"), pinActionID(s));
 }
 
-// Shared big-card + mini-grid builder. maxRest caps the grid (Infinity ok);
-// when capped, a "+N more" footnote is appended by the caller via return.
-function cardsView(maxRest) {
+// Overflow tile that keeps the grid rectangular when the drawer is capped.
+function moreCard(count, p) {
+  var inner = View.vstack([
+    View.text("+" + count, { style: "headline", color: WHITE_65, lineLimit: 1 }),
+    View.text("more", { style: "caption", color: WHITE_40, lineLimit: 1 })
+  ], { spacing: 1, align: "center" });
+  return cardBG(View.padding(inner, { edges: "all", amount: 4 }), p.miniW, p.miniH, "center");
+}
+
+// Shared big-card + mini-grid builder, laid out as a fixed-width grid so
+// columns align across rows and both layouts look the same, just roomier.
+function cardsView(p) {
   var big = bigCardSession();
   var rest = [];
-  for (var i = 0; i < sessions.length && rest.length < maxRest; i++) {
+  for (var i = 0; i < sessions.length; i++) {
     if (sessionPendingPermission(sessions[i])) continue; // surfaced as question card
     if (sessionKey(sessions[i]) !== sessionKey(big)) rest.push(sessions[i]);
   }
-  var gridRows = [];
-  for (var r = 0; r < rest.length; r += 2) {
-    var cells = [miniCard(rest[r], sessionKey(rest[r]) === loadPinnedKey())];
-    if (r + 1 < rest.length) cells.push(miniCard(rest[r + 1], sessionKey(rest[r + 1]) === loadPinnedKey()));
-    gridRows.push(View.hstack(cells, { spacing: 6, align: "center" }));
+  var shown = rest.slice(0, p.maxMini);
+  var hidden = rest.length - shown.length;
+  var cells = [];
+  for (var j = 0; j < shown.length; j++) {
+    cells.push(miniCard(shown[j], sessionKey(shown[j]) === loadPinnedKey(), p));
   }
+  if (hidden > 0) {
+    if (cells.length >= p.maxMini) cells.pop();
+    cells.push(moreCard(hidden + 1, p));
+  }
+
+  var gridRows = [];
+  for (var r = 0; r < cells.length; r += p.cols) {
+    gridRows.push(View.hstack(cells.slice(r, r + p.cols), { spacing: p.gap, align: "center" }));
+  }
+  var gridW = p.miniW * p.cols + p.gap * (p.cols - 1);
   var right = gridRows.length > 0
-    ? View.vstack(gridRows, { spacing: 6, align: "center" })
-    : View.text("tap a card to pin it here", { style: "footnote", color: WHITE_40 });
+    ? View.vstack(gridRows, { spacing: p.gap, align: "leading" })
+    : View.frame(
+        View.text("tap a card to pin it here", { style: "footnote", color: WHITE_40 }),
+        { width: gridW, height: p.miniH, alignment: "leading" }
+      );
+
+  // Match the big card to the grid's block height so both columns end on the
+  // same baseline; a single row of minis still keeps a readable hero card.
+  var rows = Math.max(1, Math.ceil(cells.length / p.cols));
+  var gridH = rows * p.miniH + (rows - 1) * p.gap;
+  var bigH = Math.max(p.bigMinH, gridH);
+
   return {
     big: big,
-    view: View.hstack([bigCard(big), right], { spacing: 8, align: "center" }),
-    shown: rest.length
+    view: View.hstack([bigCard(big, p, bigH), right], { spacing: p.bigGap, align: "top" }),
+    shown: shown.length
   };
 }
 
@@ -912,14 +955,8 @@ SuperIsland.registerModule({
       var card = questionCard(sessions[q], 22);
       if (card) return card;
     }
-    var cards = cardsView(4);
-    var body = [cards.view];
-    if (sessions.length > 5) {
-      body.push(View.text("+" + (sessions.length - 5) + " more", {
-        style: "footnote", color: WHITE_40
-      }));
-    }
-    return View.vstack(body, { spacing: 6, align: "leading" });
+    var cards = cardsView(CARD_DRAWER);
+    return cards.view;
   },
 
   // -- fullExpanded (detail, 400×200) --
@@ -937,7 +974,7 @@ SuperIsland.registerModule({
         rows.push(View.divider());
       }
     }
-    rows.push(cardsView(9999).view);
+    rows.push(cardsView(CARD_DETAIL).view);
     return View.scroll(
       View.vstack(rows, { spacing: 6, align: "leading" }),
       { axes: "vertical", showsIndicators: false }
